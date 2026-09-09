@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="ml">
+<head>
+  <meta charset="UTF-8">
+  <title>WMS NetworkLink KML Generator</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #f4f6f9;
+      padding: 30px;
+      display: flex;
+      justify-content: center;
+    }
+    .card {
+      background: #ffffff;
+      padding: 25px 30px;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+      width: 100%;
+      max-width: 550px;
+    }
+    h2 {
+      margin-top: 0;
+      color: #333;
+      font-size: 20px;
+      border-bottom: 2px solid #007bff;
+      padding-bottom: 10px;
+    }
+    label {
+      display: block;
+      font-weight: bold;
+      margin-top: 15px;
+      margin-bottom: 5px;
+      color: #555;
+    }
+    input, select {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      box-sizing: border-box;
+      font-size: 14px;
+    }
+    button {
+      margin-top: 20px;
+      width: 100%;
+      padding: 12px;
+      background-color: #007bff;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      font-size: 16px;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    button:hover {
+      background-color: #0056b3;
+    }
+    .help-text {
+      font-size: 12px;
+      color: #777;
+      margin-top: 4px;
+    }
+  </style>
+</head>
+<body>
+
+<div class="card">
+  <h2>WMS KML Generator</h2>
+  
+  <label for="wmsUrl">WMS Base URL:</label>
+  <input type="text" id="wmsUrl" placeholder="e.g., https://ksrec.in/geoserver/Kerala/wms">
+  <div class="help-text">'?'-ന് മുൻപുള്ള സർവീസ് ലിങ്ക് മാത്രം നൽകുക.</div>
+
+  <label for="layerName">Layer Name:</label>
+  <input type="text" id="layerName" placeholder="e.g., Cadastry_Kerala">
+
+  <label for="docName">KML / File Name (Optional):</label>
+  <input type="text" id="docName" placeholder="e.g., MyLayer">
+
+  <label for="format">Format:</label>
+  <select id="format">
+    <option value="application/vnd.google-earth.kml+xml">application/vnd.google-earth.kml+xml (GeoServer standard)</option>
+    <option value="image/png">image/png (Raster GroundOverlay support)</option>
+  </select>
+
+  <label for="transparent">Transparent:</label>
+  <select id="transparent">
+    <option value="true">True</option>
+    <option value="false">False</option>
+  </select>
+
+  <button onclick="generateAndDownloadKml()">KML ഫയൽ ഡൗൺലോഡ് ചെയ്യുക</button>
+</div>
+
+<script>
+function generateAndDownloadKml() {
+  let baseUrl = document.getElementById('wmsUrl').value.trim();
+  const layer = document.getElementById('layerName').value.trim();
+  let name = document.getElementById('docName').value.trim();
+  const format = document.getElementById('format').value;
+  const transparent = document.getElementById('transparent').value;
+
+  if (!baseUrl || !layer) {
+    alert("ദയവായി WMS Base URL-ഉം Layer Name-ഉം നൽകുക.");
+    return;
+  }
+
+  if (!name) {
+    name = layer;
+  }
+
+  // Clear existing query params if user entered them by mistake
+  if (baseUrl.includes('?')) {
+    baseUrl = baseUrl.split('?')[0];
+  }
+
+  // XML-safe query parameters (&amp;)
+  const wmsEndpoint = `${baseUrl}?service=wms&amp;request=GetMap&amp;version=1.1.1&amp;format=${encodeURIComponent(format)}&amp;layers=${encodeURIComponent(layer)}&amp;styles=&amp;transparent=${transparent}&amp;srs=EPSG:4326&amp;`;
+
+  const kmlTemplate = `<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2" xmlns:kml="http://www.opengis.net/kml/2.2" xmlns:atom="http://www.w3.org/2005/Atom">
+<Document>
+\t<name>${name}.kml</name>
+\t<open>1</open>
+\t<NetworkLink>
+\t\t<name>${name}</name>
+\t\t<open>1</open>
+\t\t<Url>
+\t\t\t<href>${wmsEndpoint}</href>
+\t\t\t<refreshInterval>0</refreshInterval>
+\t\t<viewRefreshMode>onStop</viewRefreshMode>
+\t\t<viewRefreshTime>1</viewRefreshTime>
+\t\t<viewFormat>BBOX=[bboxWest],[bboxSouth],[bboxEast],[bboxNorth]&amp;WIDTH=[width]&amp;HEIGHT=[height]</viewFormat>
+\t\t</Url>
+\t</NetworkLink>
+</Document>
+</kml>`;
+
+  const blob = new Blob([kmlTemplate], { type: "application/vnd.google-earth.kml+xml" });
+  const downloadLink = document.createElement("a");
+  downloadLink.href = URL.createObjectURL(blob);
+  downloadLink.download = `${name}.kml`;
+  document.body.appendChild(downloadLink);
+  downloadLink.click();
+  document.body.removeChild(downloadLink);
+}
+</script>
+
+</body>
+</html>
