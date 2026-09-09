@@ -4,6 +4,7 @@ import requests
 import xml.etree.ElementTree as ET
 import zipfile
 import io
+import math
 
 st.set_page_config(
     page_title="WMS Vector/KMZ Exporter",
@@ -61,7 +62,7 @@ def fetch_layers_via_python(url):
     except Exception as e:
         return {}, str(e)
 
-# മുകളിലെ ക്രമീകരണങ്ങൾ
+# ക്രമീകരണങ്ങൾ
 with st.expander("⚙️ WMS ലെയർ സെർച്ച് & ക്രമീകരണങ്ങൾ", expanded=(len(st.session_state.available_layers) == 0)):
     c1, c2 = st.columns([3, 1])
     with c1:
@@ -141,6 +142,7 @@ html_code = """
 
     L.tileLayer.wms(baseUrl, {
       layers: layerName,
+      styles: 'Kerala:Cadastry_Kerala_new',
       format: 'image/png',
       transparent: true,
       version: '1.1.1',
@@ -158,7 +160,8 @@ html_code = """
         polygon: { shapeOptions: { color: '#ef4444', weight: 2, fillOpacity: 0.2 } }
       },
       edit: { featureGroup: drawnItems, remove: true }
-    }).addTo(map);
+    });
+    map.addControl(drawControl);
 
     map.on(L.Draw.Event.CREATED, (e) => {
       drawnItems.clearLayers();
@@ -175,7 +178,7 @@ html_code = """
 
 components.html(html_code, height=500, scrolling=False)
 
-# 3. KMZ ഡൗൺലോഡർ സെക്ഷൻ
+# 3. GWC ബൈപാസ്സ് ചെയ്യുന്ന KMZ ഡൗൺലോഡർ
 st.markdown("### 📥 സെലക്ട് ചെയ്ത ഏരിയ KMZ ആയി ഡൗൺലോഡ് ചെയ്യുക")
 b_col1, b_col2 = st.columns([3, 1])
 
@@ -188,26 +191,43 @@ with b_col1:
 with b_col2:
     st.write("##")
     if st.button("KMZ ഡൗൺലോഡ് ചെയ്യുക", use_container_width=True, disabled=not bbox_val):
-        with st.spinner("സെർവറിൽ നിന്ന് ഹൈ-റെസല്യൂഷൻ ഡാറ്റ ശേഖരിക്കുന്നു..."):
+        with st.spinner("GeoWebCache മറികടന്ന് നേരിട്ട് ഹൈ-റെസല്യൂഷൻ മാപ്പ് ജനറേറ്റ് ചെയ്യുന്നു..."):
             try:
-                raw_coords = [c.strip() for c in bbox_val.split(",")]
+                raw_coords = [float(c.strip()) for c in bbox_val.split(",")]
                 if len(raw_coords) != 4:
                     st.error("BBOX തെറ്റാണ്. 4 കോർഡിനേറ്റുകൾ ഉണ്ടായിരിക്കണം.")
                     st.stop()
 
                 minx, miny, maxx, maxy = raw_coords[0], raw_coords[1], raw_coords[2], raw_coords[3]
 
+                # ആസ്പെക്റ്റ് റേഷ്യോ അനുസരിച്ച് കൃത്യമായ Width & Height കണക്കാക്കുന്നു
+                dx = abs(maxx - minx)
+                dy = abs(maxy - miny)
+                base_pixels = 2048
+                if dx >= dy and dy > 0:
+                    img_w = base_pixels
+                    img_h = max(256, int(base_pixels * (dy / dx)))
+                elif dy > 0:
+                    img_h = base_pixels
+                    img_w = max(256, int(base_pixels * (dx / dy)))
+                else:
+                    img_w = 2048
+                    img_h = 2048
+
+                # GWC പൂർണ്ണമായി ഒഴിവാക്കാനുള്ള WMS പാരാമീറ്ററുകൾ
                 params = {
                     "service": "WMS",
                     "request": "GetMap",
                     "version": "1.1.1",
                     "layers": active_layer_name,
+                    "styles": "Kerala:Cadastry_Kerala_new" if "Cadastry" in active_layer_name else "",
                     "format": "image/png",
                     "transparent": "true",
                     "srs": "EPSG:4326",
                     "bbox": f"{minx},{miny},{maxx},{maxy}",
-                    "width": "2048",
-                    "height": "2048"
+                    "width": str(img_w),
+                    "height": str(img_h),
+                    "tiled": "false"  # GWC ടൈൽ കാഷിംഗ് നിർബന്ധമായും ഓഫ് ചെയ്യുന്നു
                 }
 
                 domain = active_base_url.split("//")[-1].split("/")[0]
@@ -217,12 +237,14 @@ with b_col2:
                     "Origin": f"https://{domain}"
                 }
 
-                img_res = requests.get(active_base_url, params=params, headers=headers, timeout=30)
+                # GetMap റിക്വസ്റ്റ്
+                img_res = requests.get(active_base_url, params=params, headers=headers, timeout=35)
 
-                # Fallback: transparent=false
-                if img_res.status_code == 400:
+                # സ്റ്റൈൽ മൂലമുള്ള തടസ്സമാണെങ്കിൽ styles കാലിയാക്കി വീണ്ടും പരീക്ഷിക്കുന്നു
+                if img_res.status_code == 400 or "GWC Error" in img_res.text:
+                    params["styles"] = ""
                     params["transparent"] = "false"
-                    img_res = requests.get(active_base_url, params=params, headers=headers, timeout=30)
+                    img_res = requests.get(active_base_url, params=params, headers=headers, timeout=35)
 
                 if img_res.status_code == 200 and "image" in img_res.headers.get("content-type", ""):
                     kml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -230,7 +252,7 @@ with b_col2:
   <Folder>
     <name>{active_layer_name}_Export</name>
     <GroundOverlay>
-      <name>{active_layer_name} High-Res Overlay</name>
+      <name>{active_layer_name} Overlay</name>
       <Icon>
         <href>overlay.png</href>
       </Icon>
@@ -249,16 +271,16 @@ with b_col2:
                         z.writestr("doc.kml", kml_content.encode('utf-8'))
                         z.writestr("overlay.png", img_res.content)
 
-                    st.success("സമ്പൂർണ്ണ KMZ തയ്യാറായി!")
+                    st.success(f"സമ്പൂർണ്ണ KMZ തയ്യാറായി! (റെസല്യൂഷൻ: {img_w}x{img_h} px)")
                     st.download_button(
                         label="⬇️ KMZ ഫയൽ സേവ് ചെയ്യുക",
                         data=zip_buffer.getvalue(),
-                        file_name=f"{active_layer_name}_{minx}_{miny}.kmz",
+                        file_name=f"{active_layer_name}_{minx:.4f}_{miny:.4f}.kmz",
                         mime="application/vnd.google-earth.kmz",
                         use_container_width=True
                     )
                 else:
-                    error_msg = img_res.text[:300] if img_res.text else "Unknown"
+                    error_msg = img_res.text[:300] if img_res.text else "ശൂന്യമായ പ്രതികരണം"
                     st.error(f"സെർവർ എറർ (Status {img_res.status_code}): {error_msg}")
 
             except Exception as ex:
