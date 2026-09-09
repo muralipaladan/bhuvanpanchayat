@@ -1,1 +1,1 @@
-https://muralipaladan.github.io/KML-Maker/
+https://muralipaladan.github.io/bhuvanpanchayat
