@@ -2,149 +2,128 @@
 <html lang="ml">
 <head>
   <meta charset="UTF-8">
-  <title>WMS NetworkLink KML Generator</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bhuvan GWC Village & Cadastral Map</title>
+  
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
   <style>
-    body {
+    html, body {
+      height: 100%;
+      margin: 0;
+      padding: 0;
       font-family: Arial, sans-serif;
-      background-color: #f4f6f9;
-      padding: 30px;
-      display: flex;
-      justify-content: center;
     }
-    .card {
-      background: #ffffff;
-      padding: 25px 30px;
-      border-radius: 8px;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    #map {
+      height: 100%;
       width: 100%;
-      max-width: 550px;
     }
-    h2 {
-      margin-top: 0;
-      color: #333;
-      font-size: 20px;
-      border-bottom: 2px solid #007bff;
-      padding-bottom: 10px;
+    .status-panel {
+      position: absolute;
+      top: 12px;
+      left: 60px;
+      background: rgba(255, 255, 255, 0.95);
+      padding: 10px 14px;
+      border-radius: 6px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+      font-size: 13px;
+      z-index: 1000;
+      max-width: 320px;
     }
-    label {
-      display: block;
+    .status-panel b {
+      color: #0056b3;
+    }
+    .zoom-alert {
+      color: #d9534f;
       font-weight: bold;
-      margin-top: 15px;
-      margin-bottom: 5px;
-      color: #555;
-    }
-    input, select {
-      width: 100%;
-      padding: 10px;
-      border: 1px solid #ccc;
-      border-radius: 4px;
-      box-sizing: border-box;
-      font-size: 14px;
-    }
-    button {
-      margin-top: 20px;
-      width: 100%;
-      padding: 12px;
-      background-color: #007bff;
-      color: white;
-      border: none;
-      border-radius: 4px;
-      font-size: 16px;
-      cursor: pointer;
-      font-weight: bold;
-    }
-    button:hover {
-      background-color: #0056b3;
-    }
-    .help-text {
-      font-size: 12px;
-      color: #777;
       margin-top: 4px;
     }
   </style>
 </head>
 <body>
 
-<div class="card">
-  <h2>WMS KML Generator</h2>
-  
-  <label for="wmsUrl">WMS Base URL:</label>
-  <input type="text" id="wmsUrl" placeholder="e.g., https://ksrec.in/geoserver/Kerala/wms">
-  <div class="help-text">'?'-ന് മുൻപുള്ള സർവീസ് ലിങ്ക് മാത്രം നൽകുക.</div>
-
-  <label for="layerName">Layer Name:</label>
-  <input type="text" id="layerName" placeholder="e.g., Cadastry_Kerala">
-
-  <label for="docName">KML / File Name (Optional):</label>
-  <input type="text" id="docName" placeholder="e.g., MyLayer">
-
-  <label for="format">Format:</label>
-  <select id="format">
-    <option value="application/vnd.google-earth.kml+xml">application/vnd.google-earth.kml+xml (GeoServer standard)</option>
-    <option value="image/png">image/png (Raster GroundOverlay support)</option>
-  </select>
-
-  <label for="transparent">Transparent:</label>
-  <select id="transparent">
-    <option value="true">True</option>
-    <option value="false">False</option>
-  </select>
-
-  <button onclick="generateAndDownloadKml()">KML ഫയൽ ഡൗൺലോഡ് ചെയ്യുക</button>
+<div class="status-panel">
+  <b>Bhuvan Panchayat (GWC WMS)</b><br>
+  <span>നിലവിലെ സൂം ലെവൽ: <span id="zoomLevel">13</span></span>
+  <div id="zoomNotice" class="zoom-alert">കാഡസ്ട്രൽ കാണാൻ ഇനിയും സൂം ചെയ്യുക!</div>
 </div>
 
+<div id="map"></div>
+
+<!-- Leaflet JS -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
 <script>
-function generateAndDownloadKml() {
-  let baseUrl = document.getElementById('wmsUrl').value.trim();
-  const layer = document.getElementById('layerName').value.trim();
-  let name = document.getElementById('docName').value.trim();
-  const format = document.getElementById('format').value;
-  const transparent = document.getElementById('transparent').value;
+  // മാപ്പ് ഇനിഷ്യലൈസ് ചെയ്യുന്നു
+  const map = L.map('map', {
+    center: [10.8929, 76.1407], // നൽകിയ BBOX-ന്റെ കേന്ദ്രം
+    zoom: 13,
+    maxZoom: 22
+  });
 
-  if (!baseUrl || !layer) {
-    alert("ദയവായി WMS Base URL-ഉം Layer Name-ഉം നൽകുക.");
-    return;
-  }
+  // 1. Base Maps
+  const osmBase = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap',
+    maxZoom: 22
+  }).addTo(map);
 
-  if (!name) {
-    name = layer;
-  }
+  const satelliteBase = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    attribution: 'Tiles &copy; Esri',
+    maxZoom: 22
+  });
 
-  // Clear existing query params if user entered them by mistake
-  if (baseUrl.includes('?')) {
-    baseUrl = baseUrl.split('?')[0];
-  }
+  // ഭുവന്റെ യഥാർത്ഥ ടൈൽഡ് WMS എൻഡ്‌പോയിന്റ്
+  const gwcWmsUrl = 'https://bhuvan-panchayat3.nrsc.gov.in/geoserver/gwc/service/wms';
 
-  // XML-safe query parameters (&amp;)
-  const wmsEndpoint = `${baseUrl}?service=wms&amp;request=GetMap&amp;version=1.1.1&amp;format=${encodeURIComponent(format)}&amp;layers=${encodeURIComponent(layer)}&amp;styles=&amp;transparent=${transparent}&amp;srs=EPSG:4326&amp;`;
+  // 2. Village Boundary Layer
+  const villageLayer = L.tileLayer.wms(gwcWmsUrl, {
+    layers: 'v3:village',
+    format: 'image/png',
+    transparent: true,
+    version: '1.1.1',
+    maxZoom: 22
+  }).addTo(map);
 
-  const kmlTemplate = `<?xml version="1.0" encoding="UTF-8"?>
-<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2" xmlns:kml="http://www.opengis.net/kml/2.2" xmlns:atom="http://www.w3.org/2005/Atom">
-<Document>
-\t<name>${name}.kml</name>
-\t<open>1</open>
-\t<NetworkLink>
-\t\t<name>${name}</name>
-\t\t<open>1</open>
-\t\t<Url>
-\t\t\t<href>${wmsEndpoint}</href>
-\t\t\t<refreshInterval>0</refreshInterval>
-\t\t<viewRefreshMode>onStop</viewRefreshMode>
-\t\t<viewRefreshTime>1</viewRefreshTime>
-\t\t<viewFormat>BBOX=[bboxWest],[bboxSouth],[bboxEast],[bboxNorth]&amp;WIDTH=[width]&amp;HEIGHT=[height]</viewFormat>
-\t\t</Url>
-\t</NetworkLink>
-</Document>
-</kml>`;
+  // 3. Cadastral Layer (പ്ലോട്ട് ബൗണ്ടറികൾ)
+  const cadastralLayer = L.tileLayer.wms(gwcWmsUrl, {
+    layers: 'v3:cadastral',
+    format: 'image/png',
+    transparent: true,
+    version: '1.1.1',
+    minZoom: 14, // സൂം കുറഞ്ഞാൽ അനാവശ്യ റിക്വസ്റ്റുകൾ തടയാൻ
+    maxZoom: 22
+  }).addTo(map);
 
-  const blob = new Blob([kmlTemplate], { type: "application/vnd.google-earth.kml+xml" });
-  const downloadLink = document.createElement("a");
-  downloadLink.href = URL.createObjectURL(blob);
-  downloadLink.download = `${name}.kml`;
-  document.body.appendChild(downloadLink);
-  downloadLink.click();
-  document.body.removeChild(downloadLink);
-}
+  // Layer Controls
+  const baseMaps = {
+    "OpenStreetMap": osmBase,
+    "Satellite": satelliteBase
+  };
+
+  const overlayMaps = {
+    "Village Boundary (v3:village)": villageLayer,
+    "Cadastral Plots (v3:cadastral)": cadastralLayer
+  };
+
+  L.control.layers(baseMaps, overlayMaps, { collapsed: false }).addTo(map);
+  L.control.scale({ imperial: false }).addTo(map);
+
+  // സൂം ലെവൽ അറിയിപ്പ് അപ്‌ഡേറ്റ് ചെയ്യാനുള്ള ഫംഗ്ഷൻ
+  const zoomText = document.getElementById('zoomLevel');
+  const zoomNotice = document.getElementById('zoomNotice');
+
+  map.on('zoomend', function() {
+    const currentZoom = map.getZoom();
+    zoomText.innerText = currentZoom;
+    if (currentZoom >= 15) {
+      zoomNotice.style.color = '#28a745';
+      zoomNotice.innerText = 'കാഡസ്ട്രൽ പ്ലോട്ടുകൾ ലഭ്യമാണ്';
+    } else {
+      zoomNotice.style.color = '#d9534f';
+      zoomNotice.innerText = 'കാഡസ്ട്രൽ കാണാൻ ഇനിയും സൂം ചെയ്യുക (Zoom >= 15)';
+    }
+  });
 </script>
 
 </body>
