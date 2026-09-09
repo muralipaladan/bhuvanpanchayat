@@ -1,5 +1,10 @@
 import streamlit as st
 import streamlit.components.v1 as components
+import requests
+import xml.etree.ElementTree as ET
+import json
+import io
+import zipfile
 
 st.set_page_config(
     page_title="WMS Vector Polygon Exporter",
@@ -8,21 +13,111 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Streamlit ഹെഡറും മാർജിനുകളും പൂർണ്ണമായി ഒഴിവാക്കൽ
+# സ്ക്രീൻ പരമാവധി വലുതാക്കാനുള്ള സ്റ്റൈൽ
 st.markdown("""
 <style>
     header {visibility: hidden;}
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     .block-container {
-        padding: 0 !important;
-        margin: 0 !important;
+        padding-top: 10px !important;
+        padding-bottom: 0px !important;
+        padding-left: 15px !important;
+        padding-right: 15px !important;
         max-width: 100% !important;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# f-string ഒഴിവാക്കി കൃത്യമായ പ്യുവർ HTML സ്ട്രിംഗ്
+# സെഷൻ സ്റ്റേറ്റുകൾ
+if "available_layers" not in st.session_state:
+    st.session_state.available_layers = {}
+if "selected_layer_name" not in st.session_state:
+    st.session_state.selected_layer_name = "Cadastry_Kerala"
+if "wms_url" not in st.session_state:
+    st.session_state.wms_url = "https://ksrec.in/geoserver/Kerala/wms"
+
+# പൈത്തൺ സെർവർ വഴി ലെയറുകൾ എടുക്കൽ (CORS പൂർണ്ണമായി ബൈപാസ്സ് ചെയ്യുന്നു)
+def fetch_layers_via_python(url):
+    clean_url = url.split("?")[0].strip()
+    target_url = f"{clean_url}?service=WMS&version=1.1.1&request=GetCapabilities"
+    
+    domain = clean_url.split("//")[-1].split("/")[0]
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Referer": f"https://{domain}/",
+        "Origin": f"https://{domain}",
+        "Accept": "application/xml,text/xml,*/*"
+    }
+    
+    try:
+        res = requests.get(target_url, headers=headers, timeout=25)
+        if res.status_code == 200:
+            root = ET.fromstring(res.content)
+            layer_dict = {}
+            for layer in root.iter("Layer"):
+                name = layer.find("Name")
+                title = layer.find("Title")
+                if name is not None and name.text:
+                    l_name = name.text.strip()
+                    l_title = title.text.strip() if (title is not None and title.text) else l_name
+                    layer_dict[l_name] = l_title
+            return layer_dict, None
+        return {}, f"സെർവർ കോഡ്: {res.status_code}"
+    except Exception as e:
+        return {}, str(e)
+
+# --- Top Navigation Bar ---
+with st.expander("⚙️ WMS ലെയർ സെർച്ച് & ക്രമീകരണങ്ങൾ", expanded=(len(st.session_state.available_layers) == 0)):
+    c1, c2 = st.columns([3, 1])
+    with c1:
+        wms_input = st.text_input("WMS സെർവർ URL:", value=st.session_state.wms_url)
+        st.session_state.wms_url = wms_input
+    with c2:
+        st.write("##")
+        if st.button("ലെയറുകൾ ഫെച്ച് ചെയ്യുക", use_container_width=True):
+            with st.spinner("പൈത്തൺ വഴി സെർവർ പരിശോധിക്കുന്നു..."):
+                layers, err = fetch_layers_via_python(st.session_state.wms_url)
+                if layers:
+                    st.session_state.available_layers = layers
+                    st.success(f"{len(layers)} ലെയറുകൾ വിജയകരമായി കണ്ടെത്തി!")
+                else:
+                    st.error(f"ലെയറുകൾ ലഭിച്ചില്ല: {err}")
+
+    # ലെയർ സെർച്ച് ഫിൽട്ടർ
+    if st.session_state.available_layers:
+        s_col1, s_col2 = st.columns([1, 2])
+        with s_col1:
+            query = st.text_input("🔍 ലെയർ പേര് സെർച്ച് ചെയ്യുക:", placeholder="ഉദാ: Cadastry, village...").strip().lower()
+        
+        all_l = st.session_state.available_layers
+        filtered = {k: v for k, v in all_l.items() if query in k.lower() or query in v.lower()} if query else all_l
+        
+        with s_col2:
+            if filtered:
+                sel = st.selectbox(f"ലഭ്യമായ ലെയറുകൾ ({len(filtered)} എണ്ണം):", options=list(filtered.keys()), format_func=lambda x: f"{filtered[x]} ({x})")
+                if st.button("ഈ ലെയർ മാപ്പിൽ ലോഡ് ചെയ്യുക"):
+                    st.session_state.selected_layer_name = sel
+                    st.rerun()
+            else:
+                st.warning("സെർച്ച് ഫലങ്ങൾ ലഭ്യമല്ല.")
+    else:
+        m_col1, m_col2 = st.columns([3, 1])
+        with m_col1:
+            manual_layer = st.text_input("ലെയർ പേര് നേരിട്ട് നൽകുക:", value=st.session_state.selected_layer_name)
+        with m_col2:
+            st.write("##")
+            if st.button("ലോഡ് ചെയ്യുക", use_container_width=True):
+                st.session_state.selected_layer_name = manual_layer
+                st.rerun()
+
+# നിലവിൽ ലോഡ് ചെയ്തിരിക്കുന്ന ലെയർ
+st.info(f"നിലവിലെ ലെയർ: **{st.session_state.selected_layer_name}** | മാപ്പിൽ Polygon/Rectangle വരച്ച് സെലക്ട് ചെയ്ത ശേഷം താഴെയുള്ള ബട്ടൺ വഴി യഥാർത്ഥ പോളിഗോൺ KMZ ഡൗൺലോഡ് ചെയ്യാം.")
+
+# --- Full Canvas Map Component ---
+active_base_url = st.session_state.wms_url.split("?")[0].strip()
+active_layer_name = st.session_state.selected_layer_name
+
 html_code = """
 <!DOCTYPE html>
 <html lang="ml">
@@ -39,106 +134,44 @@ html_code = """
       margin: 0;
       padding: 0;
       width: 100vw;
-      height: 100vh;
-      overflow: hidden;
+      height: 78vh;
       font-family: 'Segoe UI', sans-serif;
+      overflow: hidden;
     }
     #map {
-      width: 100vw;
-      height: 100vh;
-      position: absolute;
-      top: 0;
-      left: 0;
-      z-index: 1;
+      width: 100%;
+      height: 100%;
+      border-radius: 6px;
+      border: 1px solid #cbd5e1;
     }
-    #control-panel {
+    #control-floating {
       position: absolute;
-      top: 15px;
-      left: 60px;
-      width: 360px;
+      bottom: 25px;
+      left: 20px;
       background: rgba(15, 23, 42, 0.95);
-      backdrop-filter: blur(8px);
-      border-radius: 8px;
-      padding: 16px;
+      border-radius: 6px;
+      padding: 10px 14px;
       color: #fff;
       z-index: 1000;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.4);
-      border: 1px solid #334155;
-      transition: all 0.3s ease;
-    }
-    .panel-header {
+      box-shadow: 0 4px 15px rgba(0,0,0,0.3);
       display: flex;
-      justify-content: space-between;
       align-items: center;
-      margin-bottom: 12px;
-      font-size: 15px;
-      font-weight: bold;
-      color: #38bdf8;
-      cursor: pointer;
+      gap: 12px;
     }
-    .input-box {
-      width: 100%;
-      padding: 8px 10px;
-      margin-bottom: 10px;
-      background: #1e293b;
-      border: 1px solid #475569;
-      border-radius: 4px;
-      color: #fff;
-      font-size: 13px;
-      box-sizing: border-box;
-    }
-    .input-box:focus {
-      outline: 2px solid #0284c7;
-    }
-    .btn {
-      width: 100%;
-      background: #0284c7;
+    .btn-action {
+      background: #059669;
       color: white;
       border: none;
-      padding: 9px;
+      padding: 8px 14px;
       border-radius: 4px;
       cursor: pointer;
-      font-weight: 600;
-      margin-bottom: 8px;
-      transition: background 0.2s;
+      font-weight: bold;
+      font-size: 13px;
     }
-    .btn:hover:not(:disabled) { background: #0369a1; }
-    .btn:disabled { background: #475569; cursor: not-allowed; opacity: 0.6; }
-    
-    #search-results {
-      max-height: 160px;
-      overflow-y: auto;
-      background: #1e293b;
-      border: 1px solid #475569;
-      border-radius: 4px;
-      margin-bottom: 10px;
-      display: none;
-    }
-    .result-item {
-      padding: 8px 10px;
-      font-size: 12px;
-      cursor: pointer;
-      border-bottom: 1px solid #334155;
-    }
-    .result-item:hover {
-      background: #0284c7;
-    }
-    #selected-badge {
-      display: none;
-      background: #065f46;
-      border: 1px solid #059669;
-      padding: 6px 10px;
-      border-radius: 4px;
-      font-size: 12px;
-      margin-bottom: 10px;
-      justify-content: space-between;
-      align-items: center;
-    }
-    #status-msg {
-      font-size: 12px;
-      color: #94a3b8;
-      line-height: 1.4;
-      margin-top: 5px;
+    .btn-action:disabled {
+      background: #475569;
+      cursor: not-allowed;
+      opacity: 0.6;
     }
   </style>
 </head>
@@ -146,52 +179,38 @@ html_code = """
 
   <div id="map"></div>
 
-  <!-- ഫ്ലോട്ടിംഗ് കൺട്രോൾ പാനൽ -->
-  <div id="control-panel">
-    <div class="panel-header" onclick="togglePanel()">
-      <span>🗺️ WMS ലെയർ & KMZ ടൂൾ</span>
-      <span id="toggle-icon">➖</span>
-    </div>
-
-    <div id="panel-content">
-      <input type="text" id="wmsUrl" class="input-box" value="https://ksrec.in/geoserver/Kerala/wms" placeholder="WMS URL നൽകുക" />
-      <button id="btnFetch" class="btn" onclick="fetchLayers()">ലെയറുകൾ എടുക്കുക</button>
-
-      <!-- ലൈവ് സെർച്ച് ബോക്സ് -->
-      <input type="text" id="layerSearch" class="input-box" placeholder="🔍 ലെയർ പേര് സെർച്ച് ചെയ്യുക..." style="display:none;" onkeyup="filterLayers()" />
-      <div id="search-results"></div>
-
-      <div id="selected-badge">
-        <span id="selected-layer-name"></span>
-        <span style="cursor:pointer; color:#fca5a5; font-weight:bold;" onclick="removeLayer()">❌</span>
-      </div>
-
-      <button id="btnExportKmz" class="btn" style="background:#059669;" disabled onclick="exportVectorKMZ()">
-        സെലക്ട് ചെയ്ത ഏരിയ വെക്റ്റർ KMZ ആക്കുക
-      </button>
-
-      <div id="status-msg">WMS URL നൽകി 'ലെയറുകൾ എടുക്കുക' ക്ലിക്ക് ചെയ്യുക.</div>
-    </div>
+  <div id="control-floating">
+    <button id="exportKmzBtn" class="btn-action" disabled onclick="downloadVectorKMZ()">
+      സെലക്ട് ചെയ്ത ഏരിയ വെക്റ്റർ KMZ ആയി ഡൗൺലോഡ് ചെയ്യുക
+    </button>
+    <span id="map-msg" style="font-size:12px; color:#38bdf8;">മാപ്പിൽ ഏരിയ സെലക്ട് ചെയ്യുക...</span>
   </div>
 
   <script>
-    // 1. മാപ്പ് സെറ്റപ്പ്
-    const map = L.map('map', { zoomControl: false }).setView([10.5471, 76.1295], 11);
-    L.control.zoom({ position: 'bottomright' }).addTo(map);
+    const baseUrl = '""" + active_base_url + """';
+    const layerName = '""" + active_layer_name + """';
+
+    const map = L.map('map').setView([10.5471, 76.1295], 11);
 
     map.createPane('overlayPane');
     map.getPane('overlayPane').style.zIndex = 600;
 
-    const roads = L.tileLayer('https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', { maxZoom: 22 }).addTo(map);
-    const hybrid = L.tileLayer('https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', { maxZoom: 22 });
-    L.control.layers({ "Google Roads": roads, "Google Hybrid": hybrid }, null, { position: 'topright' }).addTo(map);
+    const googleRoads = L.tileLayer('https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', { maxZoom: 22 }).addTo(map);
+    const googleHybrid = L.tileLayer('https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', { maxZoom: 22 });
+    L.control.layers({ "Google Roads": googleRoads, "Google Hybrid": googleHybrid }, null, { position: 'topright' }).addTo(map);
 
-    let allLayersList = [];
-    let currentWmsLayer = null;
-    let selectedLayerObj = null;
+    // തിരഞ്ഞെടുത്ത WMS ടൈലുകൾ മാപ്പിൽ ചേർക്കുന്നു
+    L.tileLayer.wms(baseUrl, {
+      layers: layerName,
+      format: 'image/png',
+      transparent: true,
+      version: '1.1.1',
+      maxZoom: 22,
+      pane: 'overlayPane',
+      opacity: 0.9
+    }).addTo(map);
+
     let selectedBounds = null;
-
-    // Draw ടൂളുകൾ
     const drawnItems = new L.FeatureGroup().addTo(map);
     const drawControl = new L.Control.Draw({
       position: 'topleft',
@@ -208,173 +227,37 @@ html_code = """
       drawnItems.clearLayers();
       drawnItems.addLayer(e.layer);
       selectedBounds = e.layer.getBounds();
-      checkDownloadReady();
+      document.getElementById('exportKmzBtn').disabled = false;
+      document.getElementById('map-msg').innerText = "ഏരിയ തയ്യാറാണ്. KMZ ഡൗൺലോഡ് ചെയ്യാം.";
     });
 
     map.on(L.Draw.Event.DELETED, () => {
       selectedBounds = null;
-      checkDownloadReady();
+      document.getElementById('exportKmzBtn').disabled = true;
+      document.getElementById('map-msg').innerText = "ഏരിയ വീണ്ടും തിരഞ്ഞെടുക്കുക.";
     });
 
-    function togglePanel() {
-      const content = document.getElementById('panel-content');
-      const icon = document.getElementById('toggle-icon');
-      if (content.style.display === "none") {
-        content.style.display = "block";
-        icon.innerText = "➖";
-      } else {
-        content.style.display = "none";
-        icon.innerText = "➕";
-      }
-    }
+    // വെക്റ്റർ പോളിഗോൺ KMZ എക്സ്പോർട്ട്
+    async function downloadVectorKMZ() {
+      if (!selectedBounds) return;
+      const statusEl = document.getElementById('map-msg');
+      statusEl.innerText = "ഡാറ്റ ശേഖരിക്കുന്നു...";
 
-    async function fetchLayers() {
-      const url = document.getElementById('wmsUrl').value.trim();
-      const status = document.getElementById('status-msg');
-      status.innerText = "ലെയറുകൾ ഫെച്ച് ചെയ്യുന്നു...";
-      
-      const baseUrl = url.split("?")[0];
-      const targetUrl = baseUrl + "?service=WMS&version=1.1.1&request=GetCapabilities";
-
-      const proxies = [
-        "https://api.allorigins.win/raw?url=" + encodeURIComponent(targetUrl),
-        "https://corsproxy.io/?" + encodeURIComponent(targetUrl),
-        "https://api.codetabs.com/v1/proxy?quest=" + encodeURIComponent(targetUrl)
-      ];
-
-      let xmlText = null;
-      for (const p of proxies) {
-        try {
-          const res = await fetch(p);
-          if (res.ok) {
-            xmlText = await res.text();
-            if (xmlText.includes("<Layer")) break;
-          }
-        } catch(e) {}
-      }
-
-      if (!xmlText) {
-        status.innerText = "CORS കാരണം ഓട്ടോമാറ്റിക് ലിസ്റ്റ് കിട്ടിയില്ല. 'Cadastry_Kerala' മാനുവലായി ചേർക്കുന്നു.";
-        allLayersList = [{ name: 'Cadastry_Kerala', title: 'Cadastry_Kerala' }];
-        enableSearch();
-        return;
-      }
-
-      try {
-        const parser = new DOMParser();
-        const xml = parser.parseFromString(xmlText, "text/xml");
-        const layers = xml.querySelectorAll("Layer > Layer");
-        allLayersList = [];
-
-        layers.forEach(l => {
-          const n = l.querySelector("Name");
-          const t = l.querySelector("Title");
-          if (n) {
-            allLayersList.push({
-              name: n.textContent.trim(),
-              title: t ? t.textContent.trim() : n.textContent.trim()
-            });
-          }
-        });
-
-        if (allLayersList.length > 0) {
-          enableSearch();
-          status.innerText = allLayersList.length + " ലെയറുകൾ കണ്ടെത്തി. പേര് സെർച്ച് ചെയ്യുക.";
-        }
-      } catch (err) {
-        status.innerText = "പാർസിങ് പിഴവ് സംഭവിച്ചു.";
-      }
-    }
-
-    function enableSearch() {
-      document.getElementById('layerSearch').style.display = "block";
-      filterLayers();
-    }
-
-    function filterLayers() {
-      const q = document.getElementById('layerSearch').value.toLowerCase();
-      const resBox = document.getElementById('search-results');
-      resBox.innerHTML = "";
-
-      const filtered = allLayersList.filter(l => l.name.toLowerCase().includes(q) || l.title.toLowerCase().includes(q));
-
-      if (filtered.length > 0) {
-        resBox.style.display = "block";
-        filtered.slice(0, 50).forEach(l => {
-          const div = document.createElement('div');
-          div.className = "result-item";
-          div.innerText = l.title + " (" + l.name + ")";
-          div.onclick = () => selectLayer(l);
-          resBox.appendChild(div);
-        });
-      } else {
-        resBox.style.display = "none";
-      }
-    }
-
-    function selectLayer(layer) {
-      document.getElementById('search-results').style.display = "none";
-      document.getElementById('layerSearch').value = layer.name;
-      document.getElementById('selected-badge').style.display = "flex";
-      document.getElementById('selected-layer-name').innerText = layer.name;
-
-      selectedLayerObj = layer;
-      const baseUrl = document.getElementById('wmsUrl').value.trim().split("?")[0];
-
-      if (currentWmsLayer) map.removeLayer(currentWmsLayer);
-
-      currentWmsLayer = L.tileLayer.wms(baseUrl, {
-        layers: layer.name,
-        format: 'image/png',
-        transparent: true,
-        version: '1.1.1',
-        maxZoom: 22,
-        pane: 'overlayPane',
-        opacity: 0.9
-      }).addTo(map);
-
-      document.getElementById('status-msg').innerText = "ലെയർ ലോഡ് ആയി! മാപ്പിൽ ഏരിയ സെലക്ട് ചെയ്യുക.";
-      checkDownloadReady();
-
-      // മാപ്പ് കാണാൻ പാനൽ മിനിമൈസ് ചെയ്യൽ
-      togglePanel();
-    }
-
-    function removeLayer() {
-      if (currentWmsLayer) map.removeLayer(currentWmsLayer);
-      currentWmsLayer = null;
-      selectedLayerObj = null;
-      document.getElementById('selected-badge').style.display = "none";
-      checkDownloadReady();
-    }
-
-    function checkDownloadReady() {
-      const btn = document.getElementById('btnExportKmz');
-      btn.disabled = !(selectedLayerObj && selectedBounds);
-    }
-
-    async function exportVectorKMZ() {
-      if (!selectedLayerObj || !selectedBounds) return;
-      const status = document.getElementById('status-msg');
-      status.innerText = "യഥാർത്ഥ പോളിഗോൺ ഡാറ്റ ശേഖരിക്കുന്നു...";
-
-      const baseUrl = document.getElementById('wmsUrl').value.trim().split("?")[0];
-      const wfsUrl = baseUrl.replace("/wms", "/wfs");
+      const wfsUrl = baseUrl.replace('/wms', '/wfs');
       const minX = selectedBounds.getWest();
       const minY = selectedBounds.getSouth();
       const maxX = selectedBounds.getEast();
       const maxY = selectedBounds.getNorth();
 
-      const featureUrl = wfsUrl + "?service=WFS&version=1.1.0&request=GetFeature&typeName=" + selectedLayerObj.name + "&outputFormat=application/json&srsname=EPSG:4326&bbox=" + minX + "," + minY + "," + maxX + "," + maxY + ",EPSG:4326";
-      const proxyUrl = "https://api.allorigins.win/raw?url=" + encodeURIComponent(featureUrl);
+      const featureUrl = `${wfsUrl}?service=WFS&version=1.1.0&request=GetFeature&typeName=${layerName}&outputFormat=application/json&srsname=EPSG:4326&bbox=${minX},${minY},${maxX},${maxY},EPSG:4326`;
 
       try {
-        const res = await fetch(proxyUrl);
+        const res = await fetch(featureUrl);
         const geojson = await res.json();
 
         if (!geojson.features || geojson.features.length === 0) {
-          alert("ഈ ഏരിയയിൽ വെക്റ്റർ പോളിഗോൺ ഫീച്ചറുകൾ ലഭ്യമല്ല.");
-          status.innerText = "ഫീച്ചറുകൾ കണ്ടെത്തിയില്ല.";
+          alert("ഈ ഏരിയയിൽ വെക്റ്റർ പോളിഗോണുകൾ കണ്ടെത്തിയില്ല.");
+          statusEl.innerText = "ഫീച്ചറുകൾ ലഭ്യമല്ല.";
           return;
         }
 
@@ -382,22 +265,20 @@ html_code = """
         geojson.features.forEach((feat, i) => {
           const props = feat.properties || {};
           const geom = feat.geometry;
-          const name = props.SURVEY_NO || props.LAND_NO || props.name || ("Polygon_" + (i+1));
+          const name = props.SURVEY_NO || props.LAND_NO || props.name || `Survey_${i+1}`;
 
           let desc = "<table border='1' style='font-size:12px;'>";
-          for (let k in props) {
-            desc += "<tr><td><b>" + k + "</b></td><td>" + props[k] + "</td></tr>";
-          }
+          for (let k in props) desc += `<tr><td><b>${k}</b></td><td>${props[k]}</td></tr>`;
           desc += "</table>";
 
           let geomStr = "";
           if (geom.type === "Polygon") {
-            const coords = geom.coordinates[0].map(c => c[0] + "," + c[1] + ",0").join(" ");
-            geomStr = "<Polygon><outerBoundaryIs><LinearRing><coordinates>" + coords + "</coordinates></LinearRing></outerBoundaryIs></Polygon>";
+            const coords = geom.coordinates[0].map(c => `${c[0]},${c[1]},0`).join(" ");
+            geomStr = `<Polygon><outerBoundaryIs><LinearRing><coordinates>${coords}</coordinates></LinearRing></outerBoundaryIs></Polygon>`;
           } else if (geom.type === "MultiPolygon") {
             geomStr = "<MultiGeometry>" + geom.coordinates.map(poly => {
-              const coords = poly[0].map(c => c[0] + "," + c[1] + ",0").join(" ");
-              return "<Polygon><outerBoundaryIs><LinearRing><coordinates>" + coords + "</coordinates></LinearRing></outerBoundaryIs></Polygon>";
+              const coords = poly[0].map(c => `${c[0]},${c[1]},0`).join(" ");
+              return `<Polygon><outerBoundaryIs><LinearRing><coordinates>${coords}</coordinates></LinearRing></outerBoundaryIs></Polygon>`;
             }).join("") + "</MultiGeometry>";
           }
 
@@ -415,7 +296,7 @@ html_code = """
         const kmlText = `<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2">
   <Document>
-    <name>${selectedLayerObj.name} Export</name>
+    <name>${layerName} Export</name>
     <Style id="polyStyle">
       <LineStyle><color>ff0000ff</color><width>2</width></LineStyle>
       <PolyStyle><fill>0</fill></PolyStyle>
@@ -430,14 +311,14 @@ html_code = """
 
         const dlLink = document.createElement("a");
         dlLink.href = URL.createObjectURL(kmzBlob);
-        dlLink.download = selectedLayerObj.name + "_polygons.kmz";
+        dlLink.download = `${layerName}_polygons.kmz`;
         dlLink.click();
 
-        status.innerText = "വെക്റ്റർ KMZ വിജയകരമായി ഡൗൺലോഡ് ചെയ്തു!";
+        statusEl.innerText = "വെക്റ്റർ KMZ ഡൗൺലോഡ് പൂർത്തിയായി!";
       } catch (err) {
         console.error(err);
-        alert("പോളിഗോൺ ഡാറ്റ ലഭ്യമാക്കുന്നതിൽ തടസ്സം നേരിട്ടു.");
-        status.innerText = "എറർ സംഭവിച്ചു.";
+        alert("വെക്റ്റർ ഡാറ്റ ലഭ്യമാക്കുന്നതിൽ തടസ്സം നേരിട്ടു.");
+        statusEl.innerText = "ഡൗൺലോഡ് പരാജയപ്പെട്ടു.";
       }
     }
   </script>
@@ -445,4 +326,4 @@ html_code = """
 </html>
 """
 
-components.html(html_code, height=920, scrolling=False)
+components.html(html_code, height=650, scrolling=False)
